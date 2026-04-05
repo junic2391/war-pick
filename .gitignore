@@ -1,0 +1,10 @@
+.DS_Store
+.env
+.env.local
+.env.*.local
+node_modules/
+apps/mobile/node_modules/
+apps/mobile/.expo/
+apps/mobile/.vscode/
+apps/mobile/dist/
+apps/mobile/web-build/

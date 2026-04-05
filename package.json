@@ -1,0 +1,11 @@
+{
+  "name": "war-pick",
+  "private": true,
+  "scripts": {
+    "dev:mobile": "npm --prefix apps/mobile start",
+    "ios": "npm --prefix apps/mobile run ios",
+    "android": "npm --prefix apps/mobile run android",
+    "web": "npm --prefix apps/mobile run web",
+    "typecheck:mobile": "npm --prefix apps/mobile run typecheck"
+  }
+}

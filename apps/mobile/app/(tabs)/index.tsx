@@ -11,6 +11,13 @@ import { useWarPickFeed } from '@/lib/war-pick-feed';
 
 export default function FeedScreen() {
   const { featuredEvent, riskEvents, runtimeConfig, totalImpacts } = useWarPickFeed();
+  const lastRefreshLabel = runtimeConfig.lastRefreshAt
+    ? new Date(runtimeConfig.lastRefreshAt).toLocaleTimeString('ko-KR', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+    : 'not yet';
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -48,6 +55,18 @@ export default function FeedScreen() {
           <Text style={styles.metricValue}>
             {riskEvents.length} events / {totalImpacts} impacts
           </Text>
+        </View>
+        <View style={styles.metricRow}>
+          <Text style={styles.metricLabel}>Refresh count</Text>
+          <Text style={styles.metricValue}>{runtimeConfig.refreshCount}</Text>
+        </View>
+        <View style={styles.metricRow}>
+          <Text style={styles.metricLabel}>Last sync</Text>
+          <Text style={styles.metricValue}>{lastRefreshLabel}</Text>
+        </View>
+        <View style={styles.metricRow}>
+          <Text style={styles.metricLabel}>Last realtime event</Text>
+          <Text style={styles.metricValue}>{runtimeConfig.lastRealtimeEvent ?? 'none'}</Text>
         </View>
         {runtimeConfig.lastError ? (
           <View style={styles.errorPanel}>

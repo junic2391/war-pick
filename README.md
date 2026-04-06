@@ -38,23 +38,39 @@ npm run typecheck:mobile
 
 ## Live Feed 확인 순서
 
-1. `.env.example`을 기준으로 `.env`를 만들고 `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_ANON_KEY`를 채웁니다.
+1. `apps/mobile/.env.example`을 기준으로 `apps/mobile/.env`를 만들고 `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_KEY`를 채웁니다.
 2. `supabase/migrations/202604040001_initial_schema.sql`을 적용합니다.
-3. `supabase/seed.sql`을 실행해 `risk_events`, `asset_impacts` 검증용 데이터를 넣습니다.
-4. `npm run dev:mobile`로 앱을 실행합니다.
-5. 홈 화면 diagnostics가 mock fallback에서 live Supabase source로 전환되는지 확인합니다.
-6. 특정 이벤트를 눌렀을 때 연결된 `asset_impacts`가 함께 보이는지 확인합니다.
+3. `supabase/migrations/20260406173500_enable_realtime_publication.sql`까지 적용해 `risk_events`, `asset_impacts`를 `supabase_realtime` publication에 추가합니다.
+4. `supabase/seed.sql`을 실행해 `risk_events`, `asset_impacts` 검증용 데이터를 넣습니다.
+5. `npm run dev:mobile`로 앱을 실행합니다.
+6. 홈 화면 diagnostics가 mock fallback에서 live Supabase source로 전환되는지 확인합니다.
+7. 특정 이벤트를 눌렀을 때 연결된 `asset_impacts`가 함께 보이는지 확인합니다.
 
 ## 환경 변수
 
 ```bash
+cp apps/mobile/.env.example apps/mobile/.env
+```
+
+모바일 앱 env:
+- `EXPO_PUBLIC_SUPABASE_URL`: Expo 앱이 읽는 Supabase 대상 URL
+- `EXPO_PUBLIC_SUPABASE_KEY`: Supabase Connect 다이얼로그 기준 Expo 클라이언트용 publishable key
+
+서버/ingest env:
+```bash
 cp .env.example .env
 ```
 
-- `EXPO_PUBLIC_SUPABASE_URL`: Expo 앱과 Edge Function이 읽는 Supabase 대상 URL
-- `EXPO_PUBLIC_SUPABASE_ANON_KEY`: Expo 클라이언트 읽기 전용 anon key
-- `SUPABASE_SERVICE_ROLE_KEY`: `ingest-rss`가 `risk_events`, `asset_impacts`를 upsert할 때 사용하는 키
+- `SUPABASE_URL`: Edge Function 또는 서버 작업이 읽는 Supabase 대상 URL
+- `SUPABASE_SECRET_KEY`: `ingest-rss`가 `risk_events`, `asset_impacts`를 upsert할 때 사용하는 서버 전용 secret key
 - `RSS_SOURCE_URLS`: 스케줄러 입력용 RSS URL 목록
+
+현재 코드에서는 zero-downtime 전환을 위해 legacy 값도 fallback으로 읽습니다.
+- `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` -> `EXPO_PUBLIC_SUPABASE_KEY`의 fallback
+- `EXPO_PUBLIC_SUPABASE_ANON_KEY` -> `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`의 fallback
+- `SUPABASE_SERVICE_ROLE_KEY` -> `SUPABASE_SECRET_KEY`의 fallback
+
+`apps/mobile/.env`를 바꾼 뒤에는 Expo 프로세스를 완전히 다시 시작해야 새 값이 반영됩니다.
 
 ## 다음 빌드 단계
 

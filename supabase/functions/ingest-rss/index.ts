@@ -129,18 +129,18 @@ interface PersistenceResult {
 async function persistNormalizedEvents(
   normalized: NormalizedRiskEvent[],
 ): Promise<PersistenceResult> {
-  const supabaseUrl = Deno.env.get('EXPO_PUBLIC_SUPABASE_URL') ?? Deno.env.get('SUPABASE_URL');
-  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? Deno.env.get('EXPO_PUBLIC_SUPABASE_URL');
+  const secretKey = Deno.env.get('SUPABASE_SECRET_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
-  if (!supabaseUrl || !serviceRoleKey) {
+  if (!supabaseUrl || !secretKey) {
     return {
       persistedCount: 0,
       note:
-        'EXPO_PUBLIC_SUPABASE_URL 또는 SUPABASE_SERVICE_ROLE_KEY가 없어 정규화 결과만 반환했습니다.',
+        'EXPO_PUBLIC_SUPABASE_URL 또는 SUPABASE_SECRET_KEY가 없어 정규화 결과만 반환했습니다.',
     };
   }
 
-  const supabase = createClient(supabaseUrl, serviceRoleKey, {
+  const supabase = createClient(supabaseUrl, secretKey, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,

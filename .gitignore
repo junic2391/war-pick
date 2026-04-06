@@ -8,3 +8,4 @@ apps/mobile/.expo/
 apps/mobile/.vscode/
 apps/mobile/dist/
 apps/mobile/web-build/
+supabase/.temp/

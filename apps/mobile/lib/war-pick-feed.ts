@@ -50,6 +50,9 @@ export type WarPickRuntimeConfig = {
   liveDataConnected: boolean;
   diagnosticsLabel: string;
   lastError: string | null;
+  lastRefreshAt: string | null;
+  refreshCount: number;
+  lastRealtimeEvent: string | null;
 };
 
 export type WarPickFeedState = {
@@ -62,20 +65,28 @@ export type WarPickFeedState = {
 
 let supabaseClient: SupabaseClient | null | undefined;
 
+function getSupabasePublishableKey() {
+  return (
+    process.env.EXPO_PUBLIC_SUPABASE_KEY ??
+    process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
+    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
+  );
+}
+
 function getSupabaseClient() {
   if (supabaseClient !== undefined) {
     return supabaseClient;
   }
 
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  const supabasePublishableKey = getSupabasePublishableKey();
 
-  if (!supabaseUrl || !supabaseAnonKey) {
+  if (!supabaseUrl || !supabasePublishableKey) {
     supabaseClient = null;
     return supabaseClient;
   }
 
-  supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+  supabaseClient = createClient(supabaseUrl, supabasePublishableKey, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
@@ -100,13 +111,14 @@ function createState(
 
 function createMockState(runtimeConfig: Partial<WarPickRuntimeConfig> = {}) {
   return createState(mockRiskEvents, {
-    envConfigured: Boolean(
-      process.env.EXPO_PUBLIC_SUPABASE_URL && process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
-    ),
+    envConfigured: Boolean(process.env.EXPO_PUBLIC_SUPABASE_URL && getSupabasePublishableKey()),
     currentSource: 'mock',
     liveDataConnected: false,
     diagnosticsLabel: 'Mock seed active',
     lastError: null,
+    lastRefreshAt: null,
+    refreshCount: 0,
+    lastRealtimeEvent: null,
     ...runtimeConfig,
   });
 }
@@ -161,6 +173,34 @@ export function useWarPickFeed() {
 
       startTransition(() => {
         setFeedState(nextState);
+      });
+    };
+    const replaceLiveState = (
+      riskEvents: RiskEvent[],
+      runtimeBuilder: (currentRuntime: WarPickRuntimeConfig) => WarPickRuntimeConfig,
+    ) => {
+      if (!active) {
+        return;
+      }
+
+      startTransition(() => {
+        setFeedState((currentState) => createState(riskEvents, runtimeBuilder(currentState.runtimeConfig)));
+      });
+    };
+    const replaceMockRuntime = (
+      runtimeBuilder: (currentRuntime: WarPickRuntimeConfig) => Partial<WarPickRuntimeConfig>,
+    ) => {
+      if (!active) {
+        return;
+      }
+
+      startTransition(() => {
+        setFeedState((currentState) =>
+          createMockState({
+            ...currentState.runtimeConfig,
+            ...runtimeBuilder(currentState.runtimeConfig),
+          }),
+        );
       });
     };
     const patchRuntime = (runtimePatch: Partial<WarPickRuntimeConfig>) => {
@@ -225,39 +265,41 @@ export function useWarPickFeed() {
           (eventRows ?? []) as RiskEventRow[],
           (impactRows ?? []) as AssetImpactRow[],
         );
+        const nextRefreshAt = new Date().toISOString();
 
         if (liveRiskEvents.length === 0) {
-          replaceState(
-            createMockState({
+          replaceMockRuntime((currentRuntime) => ({
               currentSource: 'live-fallback',
               diagnosticsLabel: 'Live table empty, mock seed shown',
               envConfigured: true,
               lastError: null,
               liveDataConnected: true,
-            }),
-          );
+              lastRefreshAt: nextRefreshAt,
+              refreshCount: currentRuntime.refreshCount + 1,
+            }));
           return;
         }
 
-        replaceState(
-          createState(liveRiskEvents, {
+        replaceLiveState(liveRiskEvents, (currentRuntime) => ({
+            ...currentRuntime,
             envConfigured: true,
             currentSource: 'live',
             liveDataConnected: true,
             diagnosticsLabel: 'Live Supabase feed active',
             lastError: null,
-          }),
-        );
+            lastRefreshAt: nextRefreshAt,
+            refreshCount: currentRuntime.refreshCount + 1,
+          }));
       } catch (error) {
-        replaceState(
-          createMockState({
+        replaceMockRuntime((currentRuntime) => ({
             currentSource: 'live-fallback',
             diagnosticsLabel: 'Live fetch failed, mock seed shown',
             envConfigured: true,
             lastError: getErrorMessage(error),
             liveDataConnected: false,
-          }),
-        );
+            lastRefreshAt: new Date().toISOString(),
+            refreshCount: currentRuntime.refreshCount + 1,
+          }));
       }
     };
 
@@ -270,7 +312,10 @@ export function useWarPickFeed() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'risk_events' },
-        () => {
+        (payload) => {
+          patchRuntime({
+            lastRealtimeEvent: `${payload.eventType} risk_events`,
+          });
           loadLiveFeed().catch(() => {
             // loadLiveFeed handles its own fallback state.
           });
@@ -279,7 +324,10 @@ export function useWarPickFeed() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'asset_impacts' },
-        () => {
+        (payload) => {
+          patchRuntime({
+            lastRealtimeEvent: `${payload.eventType} asset_impacts`,
+          });
           loadLiveFeed().catch(() => {
             // loadLiveFeed handles its own fallback state.
           });

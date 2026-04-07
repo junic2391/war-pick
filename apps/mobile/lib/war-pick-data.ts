@@ -45,7 +45,7 @@ export const mockRiskEvents: RiskEvent[] = [
     riskLevel: 'high',
     verificationStatus: 'verified',
     countryCode: 'IR',
-    regionName: 'Strait of Hormuz',
+    regionName: '호르무즈 해협',
     latitude: 26.566,
     longitude: 56.249,
     occurredAt: minutesAgo(8),
@@ -81,7 +81,7 @@ export const mockRiskEvents: RiskEvent[] = [
     riskLevel: 'medium',
     verificationStatus: 'pending',
     countryCode: 'YE',
-    regionName: 'Red Sea',
+    regionName: '홍해',
     latitude: 15.103,
     longitude: 42.571,
     occurredAt: minutesAgo(21),
@@ -117,7 +117,7 @@ export const mockRiskEvents: RiskEvent[] = [
     riskLevel: 'medium',
     verificationStatus: 'verified',
     countryCode: 'UA',
-    regionName: 'Eastern Europe',
+    regionName: '동유럽',
     latitude: 48.379,
     longitude: 31.165,
     occurredAt: minutesAgo(43),
@@ -199,7 +199,16 @@ export function getRelativeTimeLabel(isoDate: string) {
 }
 
 export function getRiskLabel(riskLevel: RiskLevel) {
-  return riskLevel.toUpperCase();
+  switch (riskLevel) {
+    case 'critical':
+      return '매우 높음';
+    case 'high':
+      return '높음';
+    case 'medium':
+      return '보통';
+    default:
+      return '낮음';
+  }
 }
 
 export function getRiskColor(riskLevel: RiskLevel) {
@@ -223,6 +232,36 @@ export function getDirectionLabel(direction: ImpactDirection) {
       return '하방';
     default:
       return '혼합';
+  }
+}
+
+export function getEventTypeLabel(eventType: RiskEventType) {
+  switch (eventType) {
+    case 'missile':
+      return '미사일';
+    case 'drone':
+      return '드론';
+    case 'bombing':
+      return '폭격';
+    case 'naval':
+      return '해상';
+    case 'sanction':
+      return '제재';
+    default:
+      return eventType;
+  }
+}
+
+export function getVerificationStatusLabel(status: VerificationStatus) {
+  switch (status) {
+    case 'verified':
+      return '검증됨';
+    case 'pending':
+      return '검토 중';
+    case 'rejected':
+      return '반려';
+    default:
+      return status;
   }
 }
 

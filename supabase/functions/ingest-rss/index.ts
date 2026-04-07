@@ -1,5 +1,10 @@
 import type { NormalizedRiskEvent, RawArticle } from '../_shared/event-types.ts';
-import { createClient } from 'npm:@supabase/supabase-js@2';
+import { getInvalidArticleReason, normalizeArticle } from '../_shared/ingest-heuristics.ts';
+import {
+  type PersistenceClient,
+  persistNormalizedEvents as persistNormalizedEventsWithClient,
+} from '../_shared/ingest-persistence.ts';
+import { createClient } from '@supabase/supabase-js';
 
 const corsHeaders = {
   'access-control-allow-origin': '*',
@@ -7,7 +12,7 @@ const corsHeaders = {
   'access-control-allow-headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-Deno.serve(async (request) => {
+Deno.serve(async (request: Request) => {
   try {
     if (request.method === 'OPTIONS') {
       return new Response('ok', { headers: corsHeaders });
@@ -19,24 +24,39 @@ Deno.serve(async (request) => {
 
     const body = await request.json().catch(() => ({}));
     const articles = Array.isArray(body.articles) ? (body.articles as RawArticle[]) : [];
-
-    const normalized = await normalizeArticles(articles);
+    const dryRun = body.dryRun === true;
+    const normalization = normalizeArticles(articles);
+    const normalized = normalization.normalized;
+    const summary = buildNormalizationSummary(normalized);
 
     if (normalized.length === 0) {
       return json({
         received: articles.length,
         normalizedCount: 0,
+        droppedCount: normalization.dropped.length,
         persistedCount: 0,
+        dryRun,
+        summary,
+        dropped: normalization.dropped,
         normalized,
       });
     }
 
-    const persistence = await persistNormalizedEvents(normalized);
+    const persistence = dryRun
+      ? {
+          persistedCount: 0,
+          note: 'dryRun=true 이라 DB에는 저장하지 않고 정규화 결과만 반환했습니다.',
+        }
+      : await persistNormalizedEvents(normalized);
 
     return json({
       received: articles.length,
       normalizedCount: normalized.length,
+      droppedCount: normalization.dropped.length,
       persistedCount: persistence.persistedCount,
+      dryRun,
+      summary,
+      dropped: normalization.dropped,
       normalized,
       note: persistence.note,
     });
@@ -47,68 +67,61 @@ Deno.serve(async (request) => {
   }
 });
 
-async function normalizeArticles(articles: RawArticle[]): Promise<NormalizedRiskEvent[]> {
+type DroppedArticle = {
+  index: number;
+  source: string | null;
+  url: string | null;
+  reason: string;
+};
+
+type NormalizationResult = {
+  normalized: NormalizedRiskEvent[];
+  dropped: DroppedArticle[];
+};
+
+function normalizeArticles(articles: RawArticle[]): NormalizationResult {
   if (articles.length === 0) {
-    return [];
+    return {
+      normalized: [],
+      dropped: [],
+    };
   }
 
-  return articles.map((article) => ({
-    title: article.title,
-    source: article.source,
-    sourceUrl: article.url,
-    externalId: article.url,
-    summaryKo: article.summary,
-    summaryEn: article.summary,
-    eventType: classifyEventType(article.title),
-    riskLevel: classifyRiskLevel(article.title),
-    countryCode: undefined,
-    regionName: 'Unknown region',
-    latitude: 0,
-    longitude: 0,
-    occurredAt: article.publishedAt,
-    impacts: [],
-    rawPayload: {
-      article,
-      todo: 'Replace heuristics with Gemini extraction and source verification.',
-    },
-  }));
-}
+  const normalized: NormalizedRiskEvent[] = [];
+  const dropped: DroppedArticle[] = [];
 
-function classifyEventType(title: string): NormalizedRiskEvent['eventType'] {
-  const lowered = title.toLowerCase();
+  articles.forEach((article, index) => {
+    const reason = getInvalidArticleReason(article);
 
-  if (lowered.includes('drone')) {
-    return 'drone';
-  }
+    if (reason) {
+      dropped.push({
+        index,
+        source: article?.source ?? null,
+        url: article?.url ?? null,
+        reason,
+      });
+      return;
+    }
 
-  if (lowered.includes('missile')) {
-    return 'missile';
-  }
+    const event = normalizeArticle(article);
 
-  if (lowered.includes('sanction')) {
-    return 'sanction';
-  }
+    if (!event) {
+      dropped.push({
+        index,
+        source: article.source,
+        url: article.url,
+        reason: 'normalization failed',
+      });
+      return;
+    }
 
-  if (lowered.includes('naval') || lowered.includes('ship')) {
-    return 'naval';
-  }
+    normalized.push(event);
+  });
 
-  return 'bombing';
-}
-
-function classifyRiskLevel(title: string): NormalizedRiskEvent['riskLevel'] {
-  const lowered = title.toLowerCase();
-
-  if (
-    lowered.includes('strait') ||
-    lowered.includes('oil') ||
-    lowered.includes('port') ||
-    lowered.includes('terminal')
-  ) {
-    return 'high';
-  }
-
-  return 'medium';
+  return {
+    normalized,
+    dropped,
+  };
 }
 
 function json(payload: unknown, status = 200) {
@@ -121,14 +134,69 @@ function json(payload: unknown, status = 200) {
   });
 }
 
-interface PersistenceResult {
-  persistedCount: number;
-  note: string;
+function buildNormalizationSummary(normalized: NormalizedRiskEvent[]) {
+  const eventTypes = Object.fromEntries(countBy(normalized, (event) => event.eventType));
+  const riskLevels = Object.fromEntries(countBy(normalized, (event) => event.riskLevel));
+  const verificationStatuses = Object.fromEntries(
+    countBy(normalized, (event) => event.verificationStatus),
+  );
+  const regions = Object.fromEntries(
+    countBy(normalized, (event) => event.regionName ?? 'Unknown region'),
+  );
+
+  return {
+    eventTypes,
+    riskLevels,
+    verificationStatuses,
+    regions,
+  };
+}
+
+function countBy<T>(items: T[], getKey: (item: T) => string) {
+  const counts = new Map<string, number>();
+
+  items.forEach((item) => {
+    const key = getKey(item);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  });
+
+  return [...counts.entries()].sort(([left], [right]) => left.localeCompare(right));
+}
+
+function createSupabasePersistenceClient(
+  supabaseUrl: string,
+  secretKey: string,
+): PersistenceClient {
+  const supabase = createClient(supabaseUrl, secretKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
+
+  return {
+    upsertRiskEvents(rows) {
+      return supabase.from('risk_events').upsert(rows, { onConflict: 'source,external_id' });
+    },
+    fetchPersistedRiskEvents({ sources, externalIds }) {
+      return supabase
+        .from('risk_events')
+        .select('id, source, external_id')
+        .in('source', sources)
+        .in('external_id', externalIds);
+    },
+    deleteAssetImpacts(riskEventIds) {
+      return supabase.from('asset_impacts').delete().in('risk_event_id', riskEventIds);
+    },
+    insertAssetImpacts(rows) {
+      return supabase.from('asset_impacts').insert(rows);
+    },
+  };
 }
 
 async function persistNormalizedEvents(
   normalized: NormalizedRiskEvent[],
-): Promise<PersistenceResult> {
+ ) {
   const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? Deno.env.get('EXPO_PUBLIC_SUPABASE_URL');
   const secretKey = Deno.env.get('SUPABASE_SECRET_KEY') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
@@ -140,108 +208,8 @@ async function persistNormalizedEvents(
     };
   }
 
-  const supabase = createClient(supabaseUrl, secretKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-  });
-
-  const riskEventRows = normalized.map((event) => ({
-    source: event.source,
-    source_url: event.sourceUrl,
-    external_id: event.externalId ?? event.sourceUrl,
-    title: event.title,
-    summary_ko: event.summaryKo ?? null,
-    summary_en: event.summaryEn ?? null,
-    event_type: event.eventType,
-    risk_level: event.riskLevel,
-    country_code: event.countryCode ?? null,
-    region_name: event.regionName ?? null,
-    latitude: event.latitude,
-    longitude: event.longitude,
-    occurred_at: event.occurredAt,
-    ai_payload: event.rawPayload,
-  }));
-
-  const { error: upsertError } = await supabase
-    .from('risk_events')
-    .upsert(riskEventRows, { onConflict: 'source,external_id' });
-
-  if (upsertError) {
-    throw upsertError;
-  }
-
-  const eventLookup = normalized.map((event) => ({
-    source: event.source,
-    externalId: event.externalId ?? event.sourceUrl,
-  }));
-
-  const sourceSet = [...new Set(eventLookup.map((event) => event.source))];
-  const externalIdSet = [...new Set(eventLookup.map((event) => event.externalId))];
-
-  const { data: persistedEvents, error: fetchError } = await supabase
-    .from('risk_events')
-    .select('id, source, external_id')
-    .in('source', sourceSet)
-    .in('external_id', externalIdSet);
-
-  if (fetchError) {
-    throw fetchError;
-  }
-
-  const persistedByKey = new Map(
-    (persistedEvents ?? []).map((event) => [`${event.source}::${event.external_id}`, event.id]),
+  return persistNormalizedEventsWithClient(
+    normalized,
+    createSupabasePersistenceClient(supabaseUrl, secretKey),
   );
-
-  const persistedIds = normalized
-    .map((event) => persistedByKey.get(`${event.source}::${event.externalId ?? event.sourceUrl}`))
-    .filter((eventId): eventId is string => Boolean(eventId));
-
-  if (persistedIds.length === 0) {
-    return {
-      persistedCount: 0,
-      note: 'risk_events upsert 후 이벤트 식별에 실패했습니다.',
-    };
-  }
-
-  const { error: deleteImpactsError } = await supabase
-    .from('asset_impacts')
-    .delete()
-    .in('risk_event_id', persistedIds);
-
-  if (deleteImpactsError) {
-    throw deleteImpactsError;
-  }
-
-  const impactRows = normalized.flatMap((event) => {
-    const riskEventId = persistedByKey.get(`${event.source}::${event.externalId ?? event.sourceUrl}`);
-
-    if (!riskEventId) {
-      return [];
-    }
-
-    return event.impacts.map((impact) => ({
-      risk_event_id: riskEventId,
-      asset_code: impact.assetCode,
-      asset_name: impact.assetName,
-      direction: impact.direction,
-      confidence: impact.confidence,
-      move_hint: impact.moveHint ?? null,
-      rationale: impact.rationale ?? null,
-    }));
-  });
-
-  if (impactRows.length > 0) {
-    const { error: insertImpactsError } = await supabase.from('asset_impacts').insert(impactRows);
-
-    if (insertImpactsError) {
-      throw insertImpactsError;
-    }
-  }
-
-  return {
-    persistedCount: persistedIds.length,
-    note: '정규화 결과를 Supabase risk_events / asset_impacts에 저장했습니다.',
-  };
 }

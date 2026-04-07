@@ -23,7 +23,11 @@ war-pick/
 ├── apps/
 │   └── mobile/
 ├── supabase/
+│   ├── config.toml
 │   ├── functions/
+│   │   ├── _shared/
+│   │   └── ingest-rss/
+│   ├── tests/
 │   └── migrations/
 ├── .env.example
 └── package.json
@@ -34,6 +38,9 @@ war-pick/
 ```bash
 npm run dev:mobile
 npm run typecheck:mobile
+supabase start
+supabase functions serve ingest-rss --no-verify-jwt
+deno test supabase/tests/ingest-rss-test.ts
 ```
 
 ## Live Feed 확인 순서

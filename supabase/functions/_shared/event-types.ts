@@ -1,5 +1,6 @@
 export type RiskEventType = 'missile' | 'drone' | 'bombing' | 'naval' | 'sanction';
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+export type VerificationStatus = 'pending' | 'verified' | 'rejected';
 
 export interface RawArticle {
   title: string;
@@ -18,6 +19,7 @@ export interface NormalizedRiskEvent {
   summaryEn?: string;
   eventType: RiskEventType;
   riskLevel: RiskLevel;
+  verificationStatus: VerificationStatus;
   countryCode?: string;
   regionName?: string;
   latitude: number;

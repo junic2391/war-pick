@@ -16,16 +16,44 @@ export type RiskEventUpsertRow = {
   source_url: string;
   external_id: string;
   title: string;
+  title_ko: string | null;
+  title_en: string | null;
+  source_language: NormalizedRiskEvent['sourceLanguage'] | null;
   summary_ko: string | null;
   summary_en: string | null;
   event_type: NormalizedRiskEvent['eventType'];
+  event_sub_type: string | null;
+  event_direction: NormalizedRiskEvent['eventDirection'];
   risk_level: NormalizedRiskEvent['riskLevel'];
+  importance_score: NormalizedRiskEvent['importanceScore'];
+  confidence_score: NormalizedRiskEvent['confidenceScore'];
   verification_status: NormalizedRiskEvent['verificationStatus'];
+  market_sentiment: NormalizedRiskEvent['marketSentiment'];
+  time_horizon: NormalizedRiskEvent['timeHorizon'];
+  conflict_status: NormalizedRiskEvent['conflictStatus'];
+  story_key: string;
+  story_sequence: number;
+  source_count: number;
   country_code: string | null;
   region_name: string | null;
   latitude: number;
   longitude: number;
   occurred_at: string;
+  thesis: string | null;
+  scenario_base: string | null;
+  scenario_bull: string | null;
+  scenario_bear: string | null;
+  actors_json: Record<string, unknown>;
+  targets_json: Record<string, unknown>;
+  affected_assets_json: Record<string, unknown>;
+  macro_channels_json: Record<string, unknown>;
+  facts_json: Record<string, unknown>;
+  numeric_facts_json: Record<string, unknown>;
+  inferences_json: Record<string, unknown>;
+  contradictions_json: Record<string, unknown>;
+  web_enriched: boolean;
+  web_enrichment_status: NormalizedRiskEvent['webEnrichmentStatus'];
+  briefing_localized_json: Record<string, unknown>;
   ai_payload: Record<string, unknown>;
 };
 
@@ -63,16 +91,44 @@ export async function persistNormalizedEvents(
     source_url: event.sourceUrl,
     external_id: event.externalId ?? event.sourceUrl,
     title: event.title,
+    title_ko: event.titleKo ?? null,
+    title_en: event.titleEn ?? null,
+    source_language: event.sourceLanguage ?? null,
     summary_ko: event.summaryKo ?? null,
     summary_en: event.summaryEn ?? null,
     event_type: event.eventType,
+    event_sub_type: event.eventSubType ?? null,
+    event_direction: event.eventDirection,
     risk_level: event.riskLevel,
+    importance_score: event.importanceScore,
+    confidence_score: event.confidenceScore,
     verification_status: event.verificationStatus,
+    market_sentiment: event.marketSentiment,
+    time_horizon: event.timeHorizon,
+    conflict_status: event.conflictStatus,
+    story_key: event.storyKey,
+    story_sequence: event.storySequence,
+    source_count: event.sourceCount,
     country_code: event.countryCode ?? null,
     region_name: event.regionName ?? null,
     latitude: event.latitude,
     longitude: event.longitude,
     occurred_at: event.occurredAt,
+    thesis: event.thesis || null,
+    scenario_base: event.scenarioBase || null,
+    scenario_bull: event.scenarioBull || null,
+    scenario_bear: event.scenarioBear || null,
+    actors_json: { items: event.actors },
+    targets_json: { items: event.targets },
+    affected_assets_json: { items: event.affectedAssets },
+    macro_channels_json: { items: event.macroChannels },
+    facts_json: { items: event.facts },
+    numeric_facts_json: { items: event.numericFacts },
+    inferences_json: { items: event.inferences },
+    contradictions_json: { items: event.contradictions },
+    web_enriched: event.webEnriched,
+    web_enrichment_status: event.webEnrichmentStatus,
+    briefing_localized_json: event.briefingLocalized ?? {},
     ai_payload: event.rawPayload,
   }));
 

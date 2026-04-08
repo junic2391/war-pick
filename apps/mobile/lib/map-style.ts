@@ -13,8 +13,17 @@ type MapStyleLayer = {
   layout?: Record<string, unknown>;
 };
 
+type MapStyleSource = {
+  url?: string;
+  tiles?: string[];
+  [key: string]: unknown;
+};
+
 type MapStyleSpec = {
   layers: MapStyleLayer[];
+  glyphs?: string;
+  sprite?: string;
+  sources?: Record<string, MapStyleSource>;
   [key: string]: unknown;
 };
 
@@ -85,7 +94,60 @@ async function fetchStyleJson(styleUrl: string): Promise<MapStyleSpec> {
     throw new Error(`Failed to fetch map style: ${response.status}`);
   }
 
-  return (await response.json()) as MapStyleSpec;
+  const style = (await response.json()) as MapStyleSpec;
+  return absolutizeStyleUrls(style, styleUrl);
+}
+
+function absolutizeStyleUrls(style: MapStyleSpec, styleUrl: string): MapStyleSpec {
+  return {
+    ...style,
+    glyphs: resolveStyleAssetUrl(style.glyphs, styleUrl),
+    sprite: resolveStyleAssetUrl(style.sprite, styleUrl),
+    sources: style.sources
+      ? Object.fromEntries(
+          Object.entries(style.sources).map(([sourceId, source]) => [
+            sourceId,
+            {
+              ...source,
+              url: resolveStyleAssetUrl(source.url, styleUrl),
+              tiles: Array.isArray(source.tiles)
+                ? source.tiles.map((tileUrl) => resolveStyleAssetUrl(tileUrl, styleUrl) ?? tileUrl)
+                : source.tiles,
+            },
+          ]),
+        )
+      : undefined,
+  };
+}
+
+function resolveStyleAssetUrl(value: string | undefined, styleUrl: string) {
+  if (!value) {
+    return value;
+  }
+
+  if (isAbsoluteAssetUrl(value)) {
+    return value;
+  }
+
+  try {
+    const templateTokens = Array.from(value.matchAll(/\{[^}]+\}/g)).map((match) => match[0]);
+    const placeholderValue = templateTokens.reduce(
+      (currentValue, token, index) => currentValue.replace(token, `__MAP_TEMPLATE_${index}__`),
+      value,
+    );
+    const resolvedValue = new URL(placeholderValue, styleUrl).toString();
+
+    return templateTokens.reduce(
+      (currentValue, token, index) => currentValue.replace(`__MAP_TEMPLATE_${index}__`, token),
+      resolvedValue,
+    );
+  } catch {
+    return value;
+  }
+}
+
+function isAbsoluteAssetUrl(value: string) {
+  return /^(?:[a-z]+:)?\/\//i.test(value) || value.startsWith('data:');
 }
 
 async function fetchBaseStyle(): Promise<{ provider: MapStyleProvider; providerLabel: string; style: MapStyleSpec }> {

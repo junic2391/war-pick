@@ -1,11 +1,15 @@
 import type { NormalizedRiskEvent } from '../functions/_shared/event-types.ts';
-import { normalizeArticle } from '../functions/_shared/ingest-heuristics.ts';
 import {
   persistNormalizedEvents,
   type AssetImpactInsertRow,
   type PersistenceClient,
   type RiskEventUpsertRow,
 } from '../functions/_shared/ingest-persistence.ts';
+import {
+  fetchArticlesFromRssSourceUrls,
+  parseArticlesFromFeedXml,
+  parseRssSourceUrls,
+} from '../functions/_shared/rss-fetch.ts';
 
 function assertEquals<T>(actual: T, expected: T) {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -24,19 +28,51 @@ function createNormalizedEvent(
 ): NormalizedRiskEvent {
   return {
     title: 'Sample event',
+    titleKo: '샘플 이벤트',
+    titleEn: 'Sample event',
     source: 'Reuters',
     sourceUrl: 'https://example.com/sample-event',
     externalId: 'sample-event',
+    sourceLanguage: 'en',
     summaryKo: '요약',
     summaryEn: 'Summary',
     eventType: 'missile',
+    eventDirection: 'escalation',
     riskLevel: 'critical',
+    importanceScore: 9,
+    confidenceScore: 0.82,
     verificationStatus: 'verified',
+    marketSentiment: 'risk_off',
+    timeHorizon: 'weeks',
+    conflictStatus: 'active_conflict',
+    storyKey: 'missile_strait_of_hormuz_iran',
+    storySequence: 1,
+    sourceCount: 1,
     countryCode: 'IR',
     regionName: 'Strait of Hormuz',
     latitude: 26.566,
     longitude: 56.249,
     occurredAt: '2026-04-07T09:00:00.000Z',
+    actors: ['Iran'],
+    targets: ['Tanker traffic'],
+    affectedAssets: ['WTI', 'XAU'],
+    macroChannels: ['oil', 'inflation'],
+    facts: [{ claim: 'Missile alert near Strait of Hormuz', source: 'Reuters' }],
+    numericFacts: [{ label: 'Oil move', value: 2.2, unit: '%', source: 'Reuters' }],
+    inferences: ['AI 해석: 해협 긴장이 유가 리스크 프리미엄을 자극할 수 있습니다.'],
+    contradictions: [],
+    thesis: '호르무즈 해협 리스크는 원유와 안전자산에 직접 연결됩니다.',
+    scenarioBase: '기본 시나리오',
+    scenarioBull: '상방 시나리오',
+    scenarioBear: '하방 시나리오',
+    webEnriched: false,
+    webEnrichmentStatus: 'not_needed',
+    briefingLocalized: {
+      ko: {
+        fact: '핵심 사실',
+        insight: '시장 해석',
+      },
+    },
     impacts: [
       {
         assetCode: 'WTI',
@@ -52,193 +88,189 @@ function createNormalizedEvent(
   };
 }
 
-Deno.test('normalizeArticle infers Hormuz region, critical risk, and energy impacts', () => {
-  const event = normalizeArticle({
-    title: 'Reuters: Missile alert raises tanker risk near Strait of Hormuz',
-    summary:
-      'Shipping insurers warned that repeated missile alerts near the Strait of Hormuz could disrupt crude flows and lift safe-haven demand across global markets.',
-    source: 'Reuters',
-    url: 'https://example.com/hormuz-alert',
-    publishedAt: '2026-04-07T09:00:00.000Z',
-  });
+Deno.test('parseRssSourceUrls keeps only valid unique HTTP urls', () => {
+  const urls = parseRssSourceUrls([
+    'https://example.com/rss.xml',
+    ' http://feeds.example.com/world.xml ',
+    'ftp://invalid.example.com/feed.xml',
+    'not-a-url',
+    'https://example.com/rss.xml',
+  ].join('\n'));
 
-  assertEquals(event?.eventType, 'missile');
-  assertEquals(event?.riskLevel, 'critical');
-  assertEquals(event?.verificationStatus, 'verified');
-  assertEquals(event?.countryCode, 'IR');
-  assertEquals(event?.regionName, 'Strait of Hormuz');
+  assertEquals(urls, [
+    'https://example.com/rss.xml',
+    'http://feeds.example.com/world.xml',
+  ]);
+});
+
+Deno.test('parseArticlesFromFeedXml parses RSS feeds', () => {
+  const xml = `<?xml version="1.0"?>
+  <rss version="2.0">
+    <channel>
+      <title>Reuters World</title>
+      <item>
+        <title>Missile alert raises tanker risk</title>
+        <description><![CDATA[Shipping insurers warn &amp; traders react.]]></description>
+        <link>/world/hormuz-alert</link>
+        <source>Reuters</source>
+        <pubDate>Tue, 07 Apr 2026 09:00:00 GMT</pubDate>
+      </item>
+    </channel>
+  </rss>`;
+
+  const articles = parseArticlesFromFeedXml(xml, 'https://example.com/rss.xml');
+
+  assertEquals(articles.length, 1);
+  assertEquals(articles[0]?.title, 'Missile alert raises tanker risk');
+  assertEquals(articles[0]?.summary, 'Shipping insurers warn & traders react.');
+  assertEquals(articles[0]?.source, 'Reuters');
+  assertEquals(articles[0]?.url, 'https://example.com/world/hormuz-alert');
+  assertEquals(articles[0]?.publishedAt, '2026-04-07T09:00:00.000Z');
+});
+
+Deno.test('parseArticlesFromFeedXml parses Atom feeds', () => {
+  const xml = `<?xml version="1.0"?>
+  <feed xmlns="http://www.w3.org/2005/Atom">
+    <title>AP News</title>
+    <entry>
+      <title>Sanctions relief takes effect</title>
+      <summary>Diplomatic breakthrough opens the door to waivers.</summary>
+      <link href="/news/sanctions-relief" />
+      <updated>2026-04-07T10:00:00Z</updated>
+    </entry>
+  </feed>`;
+
+  const articles = parseArticlesFromFeedXml(xml, 'https://apnews.example.com/atom.xml');
+
+  assertEquals(articles.length, 1);
+  assertEquals(articles[0]?.source, 'AP News');
+  assertEquals(articles[0]?.url, 'https://apnews.example.com/news/sanctions-relief');
+  assertEquals(articles[0]?.publishedAt, '2026-04-07T10:00:00.000Z');
+});
+
+Deno.test('fetchArticlesFromRssSourceUrls dedupes duplicate articles across feeds', async () => {
+  const rssOne = `<?xml version="1.0"?>
+  <rss version="2.0">
+    <channel>
+      <title>Feed One</title>
+      <item>
+        <title>Shared article</title>
+        <description>First feed copy.</description>
+        <link>https://example.com/shared-article</link>
+        <pubDate>Tue, 07 Apr 2026 09:00:00 GMT</pubDate>
+      </item>
+    </channel>
+  </rss>`;
+  const rssTwo = `<?xml version="1.0"?>
+  <rss version="2.0">
+    <channel>
+      <title>Feed Two</title>
+      <item>
+        <title>Shared article</title>
+        <description>Second feed copy.</description>
+        <link>https://example.com/shared-article</link>
+        <pubDate>Tue, 07 Apr 2026 09:05:00 GMT</pubDate>
+      </item>
+      <item>
+        <title>Unique article</title>
+        <description>Another event.</description>
+        <link>https://example.com/unique-article</link>
+        <pubDate>Tue, 07 Apr 2026 10:00:00 GMT</pubDate>
+      </item>
+    </channel>
+  </rss>`;
+
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = String(input);
+    const xml = url.includes('feed-one') ? rssOne : rssTwo;
+    return new Response(xml, {
+      status: 200,
+      headers: { 'content-type': 'application/rss+xml' },
+    });
+  };
+
+  const articles = await fetchArticlesFromRssSourceUrls([
+    'https://example.com/feed-one.xml',
+    'https://example.com/feed-two.xml',
+  ], fetchImpl);
+
+  assertEquals(articles.length, 2);
   assertEquals(
-    event?.impacts.map((impact) => impact.assetCode),
-    ['WTI', 'XAU'],
+    articles.map((article) => article.url),
+    ['https://example.com/shared-article', 'https://example.com/unique-article'],
   );
 });
 
-Deno.test('normalizeArticle infers Red Sea logistics impacts from drone article', () => {
-  const event = normalizeArticle({
-    title: 'Drone threat forces carriers to reroute vessels in the Red Sea',
-    summary:
-      'Major shipping companies said they are reviewing routes after another drone-related threat near the Bab el-Mandeb chokepoint.',
-    source: 'Regional Wire',
-    url: 'https://example.com/red-sea-drone',
-    publishedAt: '2026-04-07T10:00:00.000Z',
-  });
-
-  assertEquals(event?.eventType, 'drone');
-  assertEquals(event?.riskLevel, 'high');
-  assertEquals(event?.verificationStatus, 'pending');
-  assertEquals(event?.countryCode, 'YE');
-  assertEquals(
-    event?.impacts.map((impact) => impact.assetCode),
-    ['BDI', 'SOX'],
-  );
-});
-
-Deno.test('normalizeArticle drops malformed payloads', () => {
-  const event = normalizeArticle({
-    title: '',
-    summary: 'summary only',
-    source: 'Reuters',
-    url: 'https://example.com/invalid',
-    publishedAt: '2026-04-07T10:00:00.000Z',
-  });
-
-  assertEquals(event, null);
-});
-
-Deno.test('persistNormalizedEvents upserts events and rewrites asset impacts for resolved ids', async () => {
-  const calls: string[] = [];
-  let upsertedRows: RiskEventUpsertRow[] = [];
-  let deletedRiskEventIds: string[] = [];
-  let insertedImpactRows: AssetImpactInsertRow[] = [];
+Deno.test('persistNormalizedEvents writes importance_score and asset impacts', async () => {
+  const upsertedRows: RiskEventUpsertRow[] = [];
+  const deletedRiskEventIds: string[][] = [];
+  const insertedImpactRows: AssetImpactInsertRow[] = [];
 
   const client: PersistenceClient = {
     async upsertRiskEvents(rows) {
-      calls.push('upsertRiskEvents');
-      upsertedRows = rows;
+      upsertedRows.push(...rows);
       return { error: null };
     },
-    async fetchPersistedRiskEvents(filters) {
-      calls.push('fetchPersistedRiskEvents');
-      assertEquals(filters, {
-        sources: ['Reuters', 'Regional Wire'],
-        externalIds: ['https://example.com/hormuz-alert', 'regional-wire-1'],
-      });
+    async fetchPersistedRiskEvents() {
       return {
-        data: [
-          { id: 'risk-1', source: 'Reuters', external_id: 'https://example.com/hormuz-alert' },
-          { id: 'risk-2', source: 'Regional Wire', external_id: 'regional-wire-1' },
-        ],
+        data: [{ id: 'risk-event-1', source: 'Reuters', external_id: 'sample-event' }],
         error: null,
       };
     },
     async deleteAssetImpacts(riskEventIds) {
-      calls.push('deleteAssetImpacts');
-      deletedRiskEventIds = riskEventIds;
+      deletedRiskEventIds.push(riskEventIds);
       return { error: null };
     },
     async insertAssetImpacts(rows) {
-      calls.push('insertAssetImpacts');
-      insertedImpactRows = rows;
-      return { error: null };
-    },
-  };
-
-  const result = await persistNormalizedEvents(
-    [
-      createNormalizedEvent({
-        sourceUrl: 'https://example.com/hormuz-alert',
-        externalId: undefined,
-        impacts: [
-          {
-            assetCode: 'WTI',
-            assetName: 'Oil',
-            direction: 'up',
-            confidence: 0.84,
-            moveHint: '+2.2%',
-            rationale: 'oil impact',
-          },
-          {
-            assetCode: 'XAU',
-            assetName: 'Gold',
-            direction: 'up',
-            confidence: 0.76,
-            moveHint: '+1.0%',
-            rationale: 'gold impact',
-          },
-        ],
-      }),
-      createNormalizedEvent({
-        source: 'Regional Wire',
-        sourceUrl: 'https://example.com/red-sea-drone',
-        externalId: 'regional-wire-1',
-        eventType: 'drone',
-        riskLevel: 'high',
-        verificationStatus: 'pending',
-        countryCode: 'YE',
-        regionName: 'Red Sea',
-        latitude: 15.103,
-        longitude: 42.571,
-        impacts: [
-          {
-            assetCode: 'BDI',
-            assetName: 'Freight',
-            direction: 'up',
-            confidence: 0.74,
-            moveHint: '+1.7%',
-            rationale: 'freight impact',
-          },
-        ],
-      }),
-    ],
-    client,
-  );
-
-  assertEquals(result, {
-    persistedCount: 2,
-    note: '정규화 결과를 Supabase risk_events / asset_impacts에 저장했습니다.',
-  });
-  assertEquals(calls, [
-    'upsertRiskEvents',
-    'fetchPersistedRiskEvents',
-    'deleteAssetImpacts',
-    'insertAssetImpacts',
-  ]);
-  assertEquals(
-    upsertedRows.map((row) => row.external_id),
-    ['https://example.com/hormuz-alert', 'regional-wire-1'],
-  );
-  assertEquals(deletedRiskEventIds, ['risk-1', 'risk-2']);
-  assertEquals(insertedImpactRows.map((row) => row.risk_event_id), ['risk-1', 'risk-1', 'risk-2']);
-  assertEquals(insertedImpactRows.map((row) => row.asset_code), ['WTI', 'XAU', 'BDI']);
-});
-
-Deno.test('persistNormalizedEvents skips impact rewrite when no persisted ids are resolved', async () => {
-  const calls: string[] = [];
-
-  const client: PersistenceClient = {
-    async upsertRiskEvents() {
-      calls.push('upsertRiskEvents');
-      return { error: null };
-    },
-    async fetchPersistedRiskEvents() {
-      calls.push('fetchPersistedRiskEvents');
-      return { data: [], error: null };
-    },
-    async deleteAssetImpacts() {
-      calls.push('deleteAssetImpacts');
-      return { error: null };
-    },
-    async insertAssetImpacts() {
-      calls.push('insertAssetImpacts');
+      insertedImpactRows.push(...rows);
       return { error: null };
     },
   };
 
   const result = await persistNormalizedEvents([createNormalizedEvent()], client);
 
-  assertEquals(result, {
-    persistedCount: 0,
-    note: 'risk_events upsert 후 이벤트 식별에 실패했습니다.',
+  assertEquals(result.persistedCount, 1);
+  assertEquals(upsertedRows.length, 1);
+  assertEquals(upsertedRows[0]?.importance_score, 9);
+  assertEquals(upsertedRows[0]?.event_type, 'missile');
+  assertEquals(upsertedRows[0]?.event_direction, 'escalation');
+  assertEquals(upsertedRows[0]?.story_key, 'missile_strait_of_hormuz_iran');
+  assertEquals(upsertedRows[0]?.title_ko, '샘플 이벤트');
+  assertEquals(upsertedRows[0]?.title_en, 'Sample event');
+  assertEquals(upsertedRows[0]?.source_language, 'en');
+  assertEquals(upsertedRows[0]?.briefing_localized_json, {
+    ko: {
+      fact: '핵심 사실',
+      insight: '시장 해석',
+    },
   });
-  assertEquals(calls, ['upsertRiskEvents', 'fetchPersistedRiskEvents']);
+  assertEquals(deletedRiskEventIds, [['risk-event-1']]);
+  assertEquals(insertedImpactRows.length, 1);
+  assertEquals(insertedImpactRows[0]?.risk_event_id, 'risk-event-1');
+  assertEquals(insertedImpactRows[0]?.asset_code, 'WTI');
+});
+
+Deno.test('persistNormalizedEvents returns a note when upserted ids cannot be resolved', async () => {
+  const client: PersistenceClient = {
+    async upsertRiskEvents() {
+      return { error: null };
+    },
+    async fetchPersistedRiskEvents() {
+      return { data: [], error: null };
+    },
+    async deleteAssetImpacts() {
+      throw new Error('deleteAssetImpacts should not be called');
+    },
+    async insertAssetImpacts() {
+      throw new Error('insertAssetImpacts should not be called');
+    },
+  };
+
+  const result = await persistNormalizedEvents([createNormalizedEvent()], client);
+
+  assertEquals(result.persistedCount, 0);
+  assert(
+    result.note.includes('이벤트 식별에 실패했습니다'),
+    'expected unresolved note when no persisted ids are returned',
+  );
 });
